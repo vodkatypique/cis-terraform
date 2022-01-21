@@ -1,0 +1,80 @@
+stages:
+  - prepare
+  - validate
+  - build
+  - deploy
+  - stop
+
+.terraform:
+  image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+  variables:
+    TF_ROOT: ${CI_PROJECT_DIR}/src
+    TF_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_COMMIT_REF_NAME}
+    TF_VAR_app_id: ${CI_COMMIT_REF_NAME}
+    TF_VAR_ansible_url: ${ANSIBLE_URL}
+    TF_VAR_ansible_ref: ${CI_COMMIT_REF_NAME}
+  before_script:
+    - cd ${TF_ROOT}
+  cache:
+    - key: terraform
+      paths:
+        - ${TF_ROOT}/.terraform*
+
+.tf_init:
+  extends: .terraform
+  stage: prepare
+  script:
+    - gitlab-terraform init
+
+tf_validate:
+  extends: .terraform
+  stage: validate
+  script:
+    - gitlab-terraform init
+    - gitlab-terraform validate
+
+.terraform_env:
+  extends: .terraform
+  environment:
+    name: ${CI_COMMIT_REF_NAME}
+    on_stop: tf_destroy
+    auto_stop_in: 1 hour
+  rules:
+    - if: $CI_COMMIT_REF_PROTECTED
+      when: manual
+
+tf_plan:
+  extends: .terraform_env
+  stage: build
+  script:
+    - gitlab-terraform plan
+    - gitlab-terraform plan-json
+  artifacts:
+    name: plan
+    paths:
+      - ${TF_ROOT}/plan.cache
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+  rules:
+    - if: $CI_COMMIT_REF_PROTECTED
+    - if: $CI_COMMIT_BRANCH
+      when: manual
+
+tf_apply:
+  extends: .terraform_env
+  stage: deploy
+  dependencies:
+    - tf_plan
+  script:
+    - gitlab-terraform apply
+
+tf_destroy:
+  extends: .terraform_env
+  stage: stop
+  environment:
+    name: ${CI_COMMIT_REF_NAME}
+    action: stop
+  dependencies:
+    - tf_apply
+  script:
+    - gitlab-terraform destroy
